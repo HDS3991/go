@@ -31,20 +31,24 @@ const (
 
 	// _Gidle means this goroutine was just allocated and has not
 	// yet been initialized.
+	// 空闲中，刚刚被创建，仍未被初始化
 	_Gidle = iota // 0
 
 	// _Grunnable means this goroutine is on a run queue. It is
 	// not currently executing user code. The stack is not owned.
+	// 待运行，G 在运行队列中准备就绪，等待被 M 取出运行
 	_Grunnable // 1
 
 	// _Grunning means this goroutine may execute user code. The
 	// stack is owned by this goroutine. It is not on a run queue.
 	// It is assigned an M and a P (g.m and g.m.p are valid).
+	// 运行中，M 正在运行这个 G 中的用户函数，此时 M 和 P 已经绑定
 	_Grunning // 2
 
 	// _Gsyscall means this goroutine is executing a system call.
 	// It is not executing user code. The stack is owned by this
 	// goroutine. It is not on a run queue. It is assigned an M.
+	// 系统调用中，M 正在运行 G 发起的系统调用
 	_Gsyscall // 3
 
 	// _Gwaiting means this goroutine is blocked in the runtime.
@@ -55,10 +59,14 @@ const (
 	// write parts of the stack under the appropriate channel
 	// lock. Otherwise, it is not safe to access the stack after a
 	// goroutine enters _Gwaiting (e.g., it may get moved).
+	// 等待中，G 处于此状态意味着 G 在运行时被阻塞
+	// 此时它既不在运行中也不在运行队列中（可能在 channel 的等待队列中）
+	// G 进入此状态时，堆栈访问是不安全的，因为它有可能被转移
 	_Gwaiting // 4
 
 	// _Gmoribund_unused is currently unused, but hardcoded in gdb
 	// scripts.
+	// 未被使用的状态，但被硬编码了
 	_Gmoribund_unused // 5
 
 	// _Gdead means this goroutine is currently unused. It may be
@@ -67,6 +75,7 @@ const (
 	// allocated. The G and its stack (if any) are owned by the M
 	// that is exiting the G or that obtained the G from the free
 	// list.
+	// 已终止，G 未被使用，可能用户代码已经执行完毕
 	_Gdead // 6
 
 	// _Genqueue_unused is currently unused.
@@ -75,6 +84,7 @@ const (
 	// _Gcopystack means this goroutine's stack is being moved. It
 	// is not executing user code and is not on a run queue. The
 	// stack is owned by the goroutine that put it in _Gcopystack.
+	// 栈复制中，G 既没有执行用户代码，也不在等待队列中，此时，G 正在获取一个新的栈空间，并将原来的内容复制过去（防止 GC 扫描）
 	_Gcopystack // 8
 
 	// _Gpreempted means this goroutine stopped itself for a
@@ -82,6 +92,7 @@ const (
 	// yet responsible for ready()ing it. Some suspendG must CAS
 	// the status to _Gwaiting to take responsibility for
 	// ready()ing this G.
+	// G 自己抢占了自己，与 _Gwaiting 类似，不同的是，没有需要等待执行的任务
 	_Gpreempted // 9
 
 	// _Gscan combined with one of the above states other than
