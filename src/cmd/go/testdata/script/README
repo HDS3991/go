@@ -372,14 +372,20 @@ The available conditions are:
 	GOEXPERIMENT <suffix> is enabled
 [GOOS:*]
 	runtime.GOOS == <suffix>
+[abscc]
+	default $CC path is absolute and exists
 [asan]
 	GOOS/GOARCH supports -asan
 [buildmode:*]
 	go supports -buildmode=<suffix>
 [case-sensitive]
 	$WORK filesystem is case-sensitive
+[cc:*]
+	go env CC = <suffix> (ignoring the go/env file)
 [cgo]
 	host CGO_ENABLED
+[cgolinkext]
+	platform requires external linking for cgo
 [compiler:*]
 	runtime.Compiler == <suffix>
 [cross]
@@ -398,8 +404,10 @@ The available conditions are:
 	test's GOROOT_FINAL does not match the real GOROOT
 [msan]
 	GOOS/GOARCH supports -msan
-[net]
-	testenv.HasExternalNetwork()
+[mustlinkext]
+	platform always requires external linking
+[net:*]
+	can connect to external network host <suffix>
 [race]
 	GOOS/GOARCH supports -race
 [root]

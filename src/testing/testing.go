@@ -13,8 +13,9 @@
 //
 // Within these functions, use the Error, Fail or related methods to signal failure.
 //
-// To write a new test suite, create a file whose name ends _test.go that
-// contains the TestXxx functions as described here.
+// To write a new test suite, create a file that
+// contains the TestXxx functions as described here,
+// and give that file a name ending in "_test.go".
 // The file will be excluded from regular
 // package builds but will be included when the "go test" command is run.
 //
@@ -440,6 +441,7 @@ func Init() {
 	parallel = flag.Int("test.parallel", runtime.GOMAXPROCS(0), "run at most `n` tests in parallel")
 	testlog = flag.String("test.testlogfile", "", "write test action log to `file` (for use only by cmd/go)")
 	shuffle = flag.String("test.shuffle", "off", "randomize the execution order of tests and benchmarks")
+	fullPath = flag.Bool("test.fullpath", false, "show full file names in error messages")
 
 	initBenchmarkFlags()
 	initFuzzFlags()
@@ -471,6 +473,7 @@ var (
 	parallel             *int
 	shuffle              *string
 	testlog              *string
+	fullPath             *bool
 
 	haveExamples bool // are there examples?
 
@@ -604,12 +607,13 @@ type common struct {
 	finished    bool                 // Test function has completed.
 	inFuzzFn    bool                 // Whether the fuzz target, if this is one, is running.
 
-	chatty     *chattyPrinter // A copy of chattyPrinter, if the chatty flag is set.
-	bench      bool           // Whether the current test is a benchmark.
-	hasSub     atomic.Bool    // whether there are sub-benchmarks.
-	raceErrors int            // Number of races detected during test.
-	runner     string         // Function name of tRunner running the test.
-	isParallel bool           // Whether the test is parallel.
+	chatty         *chattyPrinter // A copy of chattyPrinter, if the chatty flag is set.
+	bench          bool           // Whether the current test is a benchmark.
+	hasSub         atomic.Bool    // whether there are sub-benchmarks.
+	cleanupStarted atomic.Bool    // Registered cleanup callbacks have started to execute
+	raceErrors     int            // Number of races detected during test.
+	runner         string         // Function name of tRunner running the test.
+	isParallel     bool           // Whether the test is parallel.
 
 	parent   *common
 	level    int       // Nesting depth of test or benchmark.
@@ -638,6 +642,22 @@ func Short() bool {
 	}
 
 	return *short
+}
+
+// testBinary is set by cmd/go to "1" if this is a binary built by "go test".
+// The value is set to "1" by a -X option to cmd/link. We assume that
+// because this is possible, the compiler will not optimize testBinary
+// into a constant on the basis that it is an unexported package-scope
+// variable that is never changed. If the compiler ever starts implementing
+// such an optimization, we will need some technique to mark this variable
+// as "changed by a cmd/link -X option".
+var testBinary = "0"
+
+// Testing reports whether the current code is being run in a test.
+// This will report true in programs created by "go test",
+// false in programs created by "go build".
+func Testing() bool {
+	return testBinary == "1"
 }
 
 // CoverMode reports what the test coverage mode is set to. The
@@ -749,8 +769,9 @@ func (c *common) decorate(s string, skip int) string {
 	file := frame.File
 	line := frame.Line
 	if file != "" {
-		// Truncate file name at last file name separator.
-		if index := strings.LastIndex(file, "/"); index >= 0 {
+		if *fullPath {
+			// If relative path, truncate file name at last file name separator.
+		} else if index := strings.LastIndex(file, "/"); index >= 0 {
 			file = file[index+1:]
 		} else if index = strings.LastIndex(file, "\\"); index >= 0 {
 			file = file[index+1:]
@@ -1291,6 +1312,9 @@ const (
 // If catchPanic is true, this will catch panics, and return the recovered
 // value if any.
 func (c *common) runCleanup(ph panicHandling) (panicVal any) {
+	c.cleanupStarted.Store(true)
+	defer c.cleanupStarted.Store(false)
+
 	if ph == recoverAndReturnPanic {
 		defer func() {
 			panicVal = recover()
@@ -1462,8 +1486,10 @@ func tRunner(t *T, fn func(t *T)) {
 				finished = p.finished
 				p.mu.RUnlock()
 				if finished {
-					t.Errorf("%v: subtest may have called FailNow on a parent test", err)
-					err = nil
+					if !t.isParallel {
+						t.Errorf("%v: subtest may have called FailNow on a parent test", err)
+						err = nil
+					}
 					signal = false
 					break
 				}
@@ -1581,6 +1607,10 @@ func tRunner(t *T, fn func(t *T)) {
 // Run may be called simultaneously from multiple goroutines, but all such calls
 // must return before the outer test function for t returns.
 func (t *T) Run(name string, f func(t *T)) bool {
+	if t.cleanupStarted.Load() {
+		panic("testing: t.Run called during t.Cleanup")
+	}
+
 	t.hasSub.Store(true)
 	testName, ok, _ := t.context.match.fullName(&t.common, name)
 	if !ok || shouldFailFast() {
@@ -1904,7 +1934,6 @@ func (m *M) Run() (code int) {
 				// in which case every test will run nothing and succeed,
 				// with no obvious way to detect this problem (since no tests are running).
 				// So make 'no tests to run' a hard failure when testing package testing itself.
-				// The compile-only builders use -run=^$ to run no tests, so allow that.
 				fmt.Print(chatty.prefix(), "FAIL: package testing must run tests\n")
 				testOk = false
 			}

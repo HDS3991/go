@@ -10,6 +10,7 @@ import (
 	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"internal/testenv"
@@ -67,11 +68,11 @@ func TestECDH(t *testing.T) {
 			t.Error("encoded and decoded private keys are different")
 		}
 
-		bobSecret, err := curve.ECDH(bobKey, aliceKey.PublicKey())
+		bobSecret, err := bobKey.ECDH(aliceKey.PublicKey())
 		if err != nil {
 			t.Fatal(err)
 		}
-		aliceSecret, err := curve.ECDH(aliceKey, bobKey.PublicKey())
+		aliceSecret, err := aliceKey.ECDH(bobKey.PublicKey())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -168,12 +169,13 @@ func TestVectors(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		secret, err := curve.ECDH(key, peer)
+		secret, err := key.ECDH(peer)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !bytes.Equal(secret, hexDecode(t, v.SharedSecret)) {
-			t.Error("shared secret does not match")
+			t.Errorf("shared secret does not match: %x %x %s %x", secret, sha256.Sum256(secret), v.SharedSecret,
+				sha256.Sum256(hexDecode(t, v.SharedSecret)))
 		}
 	})
 }
@@ -214,7 +216,7 @@ func testX25519Failure(t *testing.T, private, public []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	secret, err := ecdh.X25519().ECDH(priv, pub)
+	secret, err := priv.ECDH(pub)
 	if err == nil {
 		t.Error("expected ECDH error")
 	}
@@ -285,6 +287,8 @@ func TestNewPrivateKey(t *testing.T) {
 				t.Errorf("unexpectedly accepted %q", input)
 			} else if k != nil {
 				t.Error("PrivateKey was not nil on error")
+			} else if strings.Contains(err.Error(), "boringcrypto") {
+				t.Errorf("boringcrypto error leaked out: %v", err)
 			}
 		}
 	})
@@ -344,6 +348,8 @@ func TestNewPublicKey(t *testing.T) {
 				t.Errorf("unexpectedly accepted %q", input)
 			} else if k != nil {
 				t.Error("PublicKey was not nil on error")
+			} else if strings.Contains(err.Error(), "boringcrypto") {
+				t.Errorf("boringcrypto error leaked out: %v", err)
 			}
 		}
 	})
@@ -386,7 +392,7 @@ func BenchmarkECDH(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			secret, err := curve.ECDH(key, peerPubKey)
+			secret, err := key.ECDH(peerPubKey)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -426,7 +432,7 @@ func main() {
 	if err != nil { panic(err) }
 	_, err = curve.NewPrivateKey(key.Bytes())
 	if err != nil { panic(err) }
-	_, err = curve.ECDH(key, key.PublicKey())
+	_, err = key.ECDH(key.PublicKey())
 	if err != nil { panic(err) }
 	println("OK")
 }
@@ -479,5 +485,41 @@ func TestLinker(t *testing.T) {
 	}
 	if !consistent {
 		t.Error("no P384 symbols found in program using ecdh.P384, test is broken")
+	}
+}
+
+func TestMismatchedCurves(t *testing.T) {
+	curves := []struct {
+		name  string
+		curve ecdh.Curve
+	}{
+		{"P256", ecdh.P256()},
+		{"P384", ecdh.P384()},
+		{"P521", ecdh.P521()},
+		{"X25519", ecdh.X25519()},
+	}
+
+	for _, privCurve := range curves {
+		priv, err := privCurve.curve.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("failed to generate test key: %s", err)
+		}
+
+		for _, pubCurve := range curves {
+			if privCurve == pubCurve {
+				continue
+			}
+			t.Run(fmt.Sprintf("%s/%s", privCurve.name, pubCurve.name), func(t *testing.T) {
+				pub, err := pubCurve.curve.GenerateKey(rand.Reader)
+				if err != nil {
+					t.Fatalf("failed to generate test key: %s", err)
+				}
+				expected := "crypto/ecdh: private key and public key curves do not match"
+				_, err = priv.ECDH(pub.PublicKey())
+				if err.Error() != expected {
+					t.Fatalf("unexpected error: want %q, got %q", expected, err)
+				}
+			})
+		}
 	}
 }

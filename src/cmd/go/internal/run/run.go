@@ -97,7 +97,7 @@ func runRun(ctx context.Context, cmd *base.Command, args []string) {
 	b := work.NewBuilder("")
 	defer func() {
 		if err := b.Close(); err != nil {
-			base.Fatalf("go: %v", err)
+			base.Fatal(err)
 		}
 	}()
 	b.Print = printStderr
@@ -125,7 +125,7 @@ func runRun(ctx context.Context, cmd *base.Command, args []string) {
 			var err error
 			pkgs, err = load.PackagesAndErrorsOutsideModule(ctx, pkgOpts, args[:1])
 			if err != nil {
-				base.Fatalf("go: %v", err)
+				base.Fatal(err)
 			}
 		} else {
 			pkgs = load.PackagesAndErrors(ctx, pkgOpts, args[:1])
@@ -177,7 +177,7 @@ func runRun(ctx context.Context, cmd *base.Command, args []string) {
 	}
 
 	a1 := b.LinkAction(work.ModeBuild, work.ModeBuild, p)
-	a := &work.Action{Mode: "go run", Func: buildRunProgram, Args: cmdArgs, Deps: []*work.Action{a1}}
+	a := &work.Action{Mode: "go run", Actor: work.ActorFunc(buildRunProgram), Args: cmdArgs, Deps: []*work.Action{a1}}
 	b.Do(ctx, a)
 }
 

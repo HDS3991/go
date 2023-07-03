@@ -7,11 +7,9 @@ package importer
 import (
 	"go/build"
 	"go/token"
-	"internal/buildcfg"
 	"internal/testenv"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 )
@@ -25,7 +23,7 @@ func TestForCompiler(t *testing.T) {
 	testenv.MustHaveGoBuild(t)
 
 	const thePackage = "math/big"
-	out, err := exec.Command(testenv.GoToolPath(t), "list", "-export", "-f={{context.Compiler}}:{{.Export}}", thePackage).CombinedOutput()
+	out, err := testenv.Command(t, testenv.GoToolPath(t), "list", "-export", "-f={{context.Compiler}}:{{.Export}}", thePackage).CombinedOutput()
 	if err != nil {
 		t.Fatalf("go list %s: %v\n%s", thePackage, err, out)
 	}
@@ -69,7 +67,7 @@ func TestForCompiler(t *testing.T) {
 		// support for it in unified IR. It's not clear that we actually
 		// need to support importing "math/big" as "math/bigger", for
 		// example. cmd/link no longer supports that.
-		if buildcfg.Experiment.Unified {
+		if true /* was buildcfg.Experiment.Unified */ {
 			t.Skip("not supported by GOEXPERIMENT=unified; see go.dev/cl/406319")
 		}
 

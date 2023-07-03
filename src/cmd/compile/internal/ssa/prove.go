@@ -802,6 +802,7 @@ func prove(f *Func) {
 	ft.checkpoint()
 
 	var lensVars map[*Block][]*Value
+	var logicVars map[*Block][]*Value
 
 	// Find length and capacity ops.
 	for _, b := range f.Blocks {
@@ -856,13 +857,82 @@ func prove(f *Func) {
 			case OpAnd64, OpAnd32, OpAnd16, OpAnd8:
 				ft.update(b, v, v.Args[1], unsigned, lt|eq)
 				ft.update(b, v, v.Args[0], unsigned, lt|eq)
+				for i := 0; i < 2; i++ {
+					if isNonNegative(v.Args[i]) {
+						ft.update(b, v, v.Args[i], signed, lt|eq)
+						ft.update(b, v, ft.zero, signed, gt|eq)
+					}
+				}
+				if logicVars == nil {
+					logicVars = make(map[*Block][]*Value)
+				}
+				logicVars[b] = append(logicVars[b], v)
 			case OpOr64, OpOr32, OpOr16, OpOr8:
-				ft.update(b, v, v.Args[1], unsigned, gt|eq)
-				ft.update(b, v, v.Args[0], unsigned, gt|eq)
+				// TODO: investigate how to always add facts without much slowdown, see issue #57959.
+				if v.Args[0].isGenericIntConst() {
+					ft.update(b, v, v.Args[0], unsigned, gt|eq)
+				}
+				if v.Args[1].isGenericIntConst() {
+					ft.update(b, v, v.Args[1], unsigned, gt|eq)
+				}
+			case OpDiv64u, OpDiv32u, OpDiv16u, OpDiv8u,
+				OpRsh8Ux64, OpRsh8Ux32, OpRsh8Ux16, OpRsh8Ux8,
+				OpRsh16Ux64, OpRsh16Ux32, OpRsh16Ux16, OpRsh16Ux8,
+				OpRsh32Ux64, OpRsh32Ux32, OpRsh32Ux16, OpRsh32Ux8,
+				OpRsh64Ux64, OpRsh64Ux32, OpRsh64Ux16, OpRsh64Ux8:
+				ft.update(b, v, v.Args[0], unsigned, lt|eq)
+			case OpMod64u, OpMod32u, OpMod16u, OpMod8u:
+				ft.update(b, v, v.Args[0], unsigned, lt|eq)
+				ft.update(b, v, v.Args[1], unsigned, lt)
+			case OpPhi:
+				// Determine the min and max value of OpPhi composed entirely of integer constants.
+				//
+				// For example, for an OpPhi:
+				//
+				// v1 = OpConst64 [13]
+				// v2 = OpConst64 [7]
+				// v3 = OpConst64 [42]
+				//
+				// v4 = OpPhi(v1, v2, v3)
+				//
+				// We can prove:
+				//
+				// v4 >= 7 && v4 <= 42
+				//
+				// TODO(jake-ciolek): Handle nested constant OpPhi's
+				sameConstOp := true
+				min := 0
+				max := 0
+
+				if !v.Args[min].isGenericIntConst() {
+					break
+				}
+
+				for k := range v.Args {
+					if v.Args[k].Op != v.Args[min].Op {
+						sameConstOp = false
+						break
+					}
+					if v.Args[k].AuxInt < v.Args[min].AuxInt {
+						min = k
+					}
+					if v.Args[k].AuxInt > v.Args[max].AuxInt {
+						max = k
+					}
+				}
+
+				if sameConstOp {
+					ft.update(b, v, v.Args[min], signed, gt|eq)
+					ft.update(b, v, v.Args[max], signed, lt|eq)
+				}
+				// One might be tempted to create a v >= ft.zero relation for
+				// all OpPhi's composed of only provably-positive values
+				// but that bloats up the facts table for a very negligible gain.
+				// In Go itself, very few functions get improved (< 5) at a cost of 5-7% total increase
+				// of compile time.
 			}
 		}
 	}
-
 	// Find induction variables. Currently, findIndVars
 	// is limited to one induction variable per block.
 	var indVars map[*Block]indVar
@@ -931,6 +1001,21 @@ func prove(f *Func) {
 
 			if branch != unknown {
 				addBranchRestrictions(ft, parent, branch)
+				// After we add the branch restriction, re-check the logic operations in the parent block,
+				// it may give us more info to omit some branches
+				if logic, ok := logicVars[parent]; ok {
+					for _, v := range logic {
+						// we only have OpAnd for now
+						ft.update(parent, v, v.Args[1], unsigned, lt|eq)
+						ft.update(parent, v, v.Args[0], unsigned, lt|eq)
+						for i := 0; i < 2; i++ {
+							if isNonNegative(v.Args[i]) {
+								ft.update(parent, v, v.Args[i], signed, lt|eq)
+								ft.update(parent, v, ft.zero, signed, gt|eq)
+							}
+						}
+					}
+				}
 				if ft.unsat {
 					// node.block is unreachable.
 					// Remove it and don't visit
@@ -1110,7 +1195,7 @@ func addBranchRestrictions(ft *factsTable, b *Block, br branch) {
 func addRestrictions(parent *Block, ft *factsTable, t domain, v, w *Value, r relation) {
 	if t == 0 {
 		// Trivial case: nothing to do.
-		// Shoult not happen, but just in case.
+		// Should not happen, but just in case.
 		return
 	}
 	for i := domain(1); i <= t; i <<= 1 {
@@ -1559,7 +1644,7 @@ func isConstDelta(v *Value) (w *Value, delta int64) {
 }
 
 // isCleanExt reports whether v is the result of a value-preserving
-// sign or zero extension
+// sign or zero extension.
 func isCleanExt(v *Value) bool {
 	switch v.Op {
 	case OpSignExt8to16, OpSignExt8to32, OpSignExt8to64,

@@ -4,6 +4,8 @@
 
 package errors
 
+//go:generate stringer -type Code codes.go
+
 type Code int
 
 // This file defines the error codes that can be produced during type-checking.
@@ -34,7 +36,9 @@ const (
 	// InvalidSyntaxTree occurs if an invalid syntax tree is provided
 	// to the type checker. It should never happen.
 	InvalidSyntaxTree Code = -1
+)
 
+const (
 	// The zero Code value indicates an unset (invalid) error code.
 	_ Code = iota
 
@@ -880,7 +884,7 @@ const (
 	// context in which it is used.
 	//
 	// Example:
-	//  var _ = 1 + new(int)
+	//  var _ = 1 + []int{}
 	InvalidUntypedConversion
 
 	// BadOffsetofSyntax occurs when unsafe.Offsetof is called with an argument
@@ -1326,10 +1330,10 @@ const (
 	NotAGenericType
 
 	// WrongTypeArgCount occurs when a type or function is instantiated with an
-	// incorrent number of type arguments, including when a generic type or
+	// incorrect number of type arguments, including when a generic type or
 	// function is used without instantiation.
 	//
-	// Errors inolving failed type inference are assigned other error codes.
+	// Errors involving failed type inference are assigned other error codes.
 	//
 	// Example:
 	//  type T[p any] int
@@ -1428,4 +1432,46 @@ const (
 	// InvalidUnsafeStringData occurs if it is used in a package
 	// compiled for a language version before go1.20.
 	_ // not used anymore
+
+	// InvalidClear occurs when clear is called with an argument
+	// that is not of map or slice type.
+	//
+	// Example:
+	//  func _(x int) {
+	//  	clear(x)
+	//  }
+	InvalidClear
+
+	// TypeTooLarge occurs if unsafe.Sizeof or unsafe.Offsetof is
+	// called with an expression whose type is too large.
+	//
+	// Example:
+	//  import "unsafe"
+	//
+	//  type E [1 << 31 - 1]int
+	//  var a [1 << 31]E
+	//  var _ = unsafe.Sizeof(a)
+	//
+	// Example:
+	//  import "unsafe"
+	//
+	//  type E [1 << 31 - 1]int
+	//  var s struct {
+	//  	_ [1 << 31]E
+	//  	x int
+	//  }
+	// var _ = unsafe.Offsetof(s.x)
+	TypeTooLarge
+
+	// InvalidMinMaxOperand occurs if min or max is called
+	// with an operand that cannot be ordered because it
+	// does not support the < operator.
+	//
+	// Example:
+	//  const _ = min(true)
+	//
+	// Example:
+	//  var s, t []byte
+	//  var _ = max(s, t)
+	InvalidMinMaxOperand
 )

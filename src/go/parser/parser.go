@@ -18,9 +18,11 @@ package parser
 import (
 	"fmt"
 	"go/ast"
+	"go/build/constraint"
 	"go/internal/typeparams"
 	"go/scanner"
 	"go/token"
+	"strings"
 )
 
 // The parser structure holds the parser's internal state.
@@ -38,6 +40,8 @@ type parser struct {
 	comments    []*ast.CommentGroup
 	leadComment *ast.CommentGroup // last lead comment
 	lineComment *ast.CommentGroup // last line comment
+	top         bool              // in top of file (before package clause)
+	goVersion   string            // minimum Go version found in //go:build comment
 
 	// Next token
 	pos token.Pos   // token position
@@ -64,13 +68,10 @@ type parser struct {
 
 func (p *parser) init(fset *token.FileSet, filename string, src []byte, mode Mode) {
 	p.file = fset.AddFile(filename, -1, len(src))
-	var m scanner.Mode
-	if mode&ParseComments != 0 {
-		m = scanner.ScanComments
-	}
 	eh := func(pos token.Position, msg string) { p.errors.Add(pos, msg) }
-	p.scanner.Init(p.file, src, eh, m)
+	p.scanner.Init(p.file, src, eh, scanner.ScanComments)
 
+	p.top = true
 	p.mode = mode
 	p.trace = mode&Trace != 0 // for convenience (p.trace is used frequently)
 	p.next()
@@ -142,7 +143,23 @@ func (p *parser) next0() {
 		}
 	}
 
-	p.pos, p.tok, p.lit = p.scanner.Scan()
+	for {
+		p.pos, p.tok, p.lit = p.scanner.Scan()
+		if p.tok == token.COMMENT {
+			if p.top && strings.HasPrefix(p.lit, "//go:build") {
+				if x, err := constraint.Parse(p.lit); err == nil {
+					p.goVersion = constraint.GoVersion(x)
+				}
+			}
+			if p.mode&ParseComments == 0 {
+				continue
+			}
+		} else {
+			// Found a non-comment; top of file is over.
+			p.top = false
+		}
+		break
+	}
 }
 
 // Consume a comment and return it and the line on which it ends.
@@ -587,15 +604,19 @@ func (p *parser) parseArrayFieldOrTypeInstance(x *ast.Ident) (*ast.Ident, ast.Ex
 		defer un(trace(p, "ArrayFieldOrTypeInstance"))
 	}
 
-	// TODO(gri) Should we allow a trailing comma in a type argument
-	//           list such as T[P,]? (We do in parseTypeInstance).
 	lbrack := p.expect(token.LBRACK)
+	trailingComma := token.NoPos // if valid, the position of a trailing comma preceding the ']'
 	var args []ast.Expr
 	if p.tok != token.RBRACK {
 		p.exprLev++
 		args = append(args, p.parseRhs())
 		for p.tok == token.COMMA {
+			comma := p.pos
 			p.next()
+			if p.tok == token.RBRACK {
+				trailingComma = comma
+				break
+			}
 			args = append(args, p.parseRhs())
 		}
 		p.exprLev--
@@ -613,6 +634,10 @@ func (p *parser) parseArrayFieldOrTypeInstance(x *ast.Ident) (*ast.Ident, ast.Ex
 		elt := p.tryIdentOrType()
 		if elt != nil {
 			// x [P]E
+			if trailingComma.IsValid() {
+				// Trailing commas are invalid in array type fields.
+				p.error(trailingComma, "unexpected comma; expecting ]")
+			}
 			return x, &ast.ArrayType{Lbrack: lbrack, Len: args[0], Elt: elt}
 		}
 	}
@@ -1205,7 +1230,7 @@ parseElements:
 	}
 
 	// TODO(rfindley): the error produced here could be improved, since we could
-	// accept a identifier, 'type', or a '}' at this point.
+	// accept an identifier, 'type', or a '}' at this point.
 	rbrace := p.expect(token.RBRACE)
 
 	return &ast.InterfaceType{
@@ -2843,6 +2868,7 @@ func (p *parser) parseFile() *ast.File {
 		FileEnd:   token.Pos(p.file.Base() + p.file.Size()),
 		Imports:   p.imports,
 		Comments:  p.comments,
+		GoVersion: p.goVersion,
 	}
 	var declErr func(token.Pos, string)
 	if p.mode&DeclarationErrors != 0 {

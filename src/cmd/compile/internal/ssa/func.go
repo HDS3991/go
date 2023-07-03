@@ -46,6 +46,9 @@ type Func struct {
 	// when register allocation is done, maps value ids to locations
 	RegAlloc []Location
 
+	// temporary registers allocated to rare instructions
+	tempRegs map[ID]*Register
+
 	// map from LocalSlot to set of Values that we want to store in that slot.
 	NamedValues map[LocalSlot][]*Value
 	// Names is a copy of NamedValues.Keys. We keep a separate list
@@ -60,12 +63,6 @@ type Func struct {
 	RegArgs []Spill
 	// AuxCall describing parameters and results for this function.
 	OwnAux *AuxCall
-
-	// WBLoads is a list of Blocks that branch on the write
-	// barrier flag. Safe-points are disabled from the OpLoad that
-	// reads the write-barrier flag until the control flow rejoins
-	// below the two successors of this block.
-	WBLoads []*Block
 
 	freeValues *Value // free Values linked by argstorage[0].  All other fields except ID are 0/nil.
 	freeBlocks *Block // free Blocks linked by succstorage[0].b.  All other fields except ID are 0/nil.
@@ -301,7 +298,7 @@ func (f *Func) newValueNoBlock(op Op, t *types.Type, pos src.XPos) *Value {
 	return v
 }
 
-// logPassStat writes a string key and int value as a warning in a
+// LogStat writes a string key and int value as a warning in a
 // tab-separated format easily handled by spreadsheets or awk.
 // file names, lines, and function names are included to provide enough (?)
 // context to allow item-by-item comparisons across runs.
@@ -384,7 +381,7 @@ func (f *Func) freeValue(v *Value) {
 	f.freeValues = v
 }
 
-// newBlock allocates a new Block of the given kind and places it at the end of f.Blocks.
+// NewBlock allocates a new Block of the given kind and places it at the end of f.Blocks.
 func (f *Func) NewBlock(kind BlockKind) *Block {
 	var b *Block
 	if f.freeBlocks != nil {
@@ -430,7 +427,7 @@ func (b *Block) NewValue0(pos src.XPos, op Op, t *types.Type) *Value {
 	return v
 }
 
-// NewValue returns a new value in the block with no arguments and an auxint value.
+// NewValue0I returns a new value in the block with no arguments and an auxint value.
 func (b *Block) NewValue0I(pos src.XPos, op Op, t *types.Type, auxint int64) *Value {
 	v := b.Func.newValue(op, t, b, pos)
 	v.AuxInt = auxint
@@ -438,7 +435,7 @@ func (b *Block) NewValue0I(pos src.XPos, op Op, t *types.Type, auxint int64) *Va
 	return v
 }
 
-// NewValue returns a new value in the block with no arguments and an aux value.
+// NewValue0A returns a new value in the block with no arguments and an aux value.
 func (b *Block) NewValue0A(pos src.XPos, op Op, t *types.Type, aux Aux) *Value {
 	v := b.Func.newValue(op, t, b, pos)
 	v.AuxInt = 0
@@ -447,7 +444,7 @@ func (b *Block) NewValue0A(pos src.XPos, op Op, t *types.Type, aux Aux) *Value {
 	return v
 }
 
-// NewValue returns a new value in the block with no arguments and both an auxint and aux values.
+// NewValue0IA returns a new value in the block with no arguments and both an auxint and aux values.
 func (b *Block) NewValue0IA(pos src.XPos, op Op, t *types.Type, auxint int64, aux Aux) *Value {
 	v := b.Func.newValue(op, t, b, pos)
 	v.AuxInt = auxint
@@ -651,7 +648,7 @@ const (
 	constEmptyStringMagic = 4455667788
 )
 
-// ConstInt returns an int constant representing its argument.
+// ConstBool returns an int constant representing its argument.
 func (f *Func) ConstBool(t *types.Type, c bool) *Value {
 	i := int64(0)
 	if c {
@@ -776,8 +773,7 @@ func (f *Func) DebugHashMatch() bool {
 	if !base.HasDebugHash() {
 		return true
 	}
-	name := f.fe.MyImportPath() + "." + f.Name
-	return base.DebugHashMatch(name)
+	return base.DebugHashMatchPkgFunc(f.fe.MyImportPath(), f.Name)
 }
 
 func (f *Func) spSb() (sp, sb *Value) {
@@ -811,7 +807,5 @@ func (f *Func) useFMA(v *Value) bool {
 	if base.FmaHash == nil {
 		return true
 	}
-
-	name := f.fe.MyImportPath() + "." + f.Name
-	return base.FmaHash.DebugHashMatchParam(name, uint64(v.Pos.Line()))
+	return base.FmaHash.MatchPos(v.Pos, nil)
 }

@@ -9,6 +9,7 @@ package http
 import (
 	"errors"
 	"fmt"
+	"internal/safefilepath"
 	"io"
 	"io/fs"
 	"mime"
@@ -69,14 +70,15 @@ func mapOpenError(originalErr error, name string, sep rune, stat func(string) (f
 // Open implements FileSystem using os.Open, opening files for reading rooted
 // and relative to the directory d.
 func (d Dir) Open(name string) (File, error) {
-	if filepath.Separator != '/' && strings.ContainsRune(name, filepath.Separator) {
-		return nil, errors.New("http: invalid character in file path")
+	path, err := safefilepath.FromFS(path.Clean("/" + name))
+	if err != nil {
+		return nil, errors.New("http: invalid or unsafe file path")
 	}
 	dir := string(d)
 	if dir == "" {
 		dir = "."
 	}
-	fullName := filepath.Join(dir, filepath.FromSlash(path.Clean("/"+name)))
+	fullName := filepath.Join(dir, path)
 	f, err := os.Open(fullName)
 	if err != nil {
 		return nil, mapOpenError(err, fullName, filepath.Separator, os.Stat)
@@ -347,8 +349,13 @@ func serveContent(w ResponseWriter, r *Request, name string, modtime time.Time, 
 
 	w.WriteHeader(code)
 
-	if r.Method != "HEAD" {
-		io.CopyN(w, sendContent, sendSize)
+	if r.Method != MethodHead {
+		if sendSize == size {
+			// use Copy in the non-range case to make use of WriterTo if available
+			io.Copy(w, sendContent)
+		} else {
+			io.CopyN(w, sendContent, sendSize)
+		}
 	}
 }
 
@@ -856,22 +863,12 @@ func FileServer(root FileSystem) Handler {
 }
 
 func (f *fileHandler) ServeHTTP(w ResponseWriter, r *Request) {
-	const options = MethodOptions + ", " + MethodGet + ", " + MethodHead
-
-	switch r.Method {
-	case MethodGet, MethodHead:
-		if !strings.HasPrefix(r.URL.Path, "/") {
-			r.URL.Path = "/" + r.URL.Path
-		}
-		serveFile(w, r, f.root, path.Clean(r.URL.Path), true)
-
-	case MethodOptions:
-		w.Header().Set("Allow", options)
-
-	default:
-		w.Header().Set("Allow", options)
-		Error(w, "read-only", StatusMethodNotAllowed)
+	upath := r.URL.Path
+	if !strings.HasPrefix(upath, "/") {
+		upath = "/" + upath
+		r.URL.Path = upath
 	}
+	serveFile(w, r, f.root, path.Clean(upath), true)
 }
 
 // httpRange specifies the byte range to be sent to the client.

@@ -295,7 +295,7 @@ func (e *Engine) Execute(s *State, file string, script *bufio.Reader, log io.Wri
 				// Since the 'stop' command halts execution of the entire script,
 				// log its message separately from the section in which it appears.
 				err = endSection(true)
-				s.Logf("%v\n", s)
+				s.Logf("%v\n", stop)
 				if err == nil {
 					return nil
 				}
@@ -564,11 +564,14 @@ func (e *Engine) runCommand(s *State, cmd *command, impl Cmd) error {
 	}
 
 	wait, runErr := impl.Run(s, cmd.args...)
-	if runErr != nil {
+	if wait == nil {
+		if async && runErr == nil {
+			return cmdError(cmd, errors.New("internal error: async command returned a nil WaitFunc"))
+		}
 		return checkStatus(cmd, runErr)
 	}
-	if async && wait == nil {
-		return cmdError(cmd, errors.New("internal error: async command returned a nil WaitFunc"))
+	if runErr != nil {
+		return cmdError(cmd, errors.New("internal error: command returned both an error and a WaitFunc"))
 	}
 
 	if cmd.background {
